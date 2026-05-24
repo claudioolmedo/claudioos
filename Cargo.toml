@@ -1,0 +1,25 @@
+[package]
+name = "claudioos"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+minifb = "0.27"
+png = "0.17"
+
+[[bin]]
+name = "claudioos"
+path = "src/bin/claudioos.rs"
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
