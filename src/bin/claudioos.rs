@@ -14,7 +14,7 @@ use claudioos::{
     BoardBus, BoardTarget, EventKind, Machine, PinKind, RamBus, RunLimit, StopReason,
     ONE_DOLLAR_BOARD_PINOUT,
 };
-use minifb::{Key, Scale, Window, WindowOptions};
+use minifb::{Key, Scale, ScaleMode, Window, WindowOptions};
 
 const LUI_X1_GPIO: u32 = 0x4001_10b7;
 const ADDI_X2_ONE: u32 = 0x0010_0113;
@@ -268,16 +268,7 @@ fn run_visual_blink() -> ExitCode {
     );
     println!("close the window or press Escape to stop");
 
-    let mut window = match Window::new(
-        "Claudio OS - One Dollar Board blink",
-        BOARD_IMAGE_WIDTH,
-        BOARD_IMAGE_HEIGHT,
-        WindowOptions {
-            resize: false,
-            scale: Scale::X2,
-            ..WindowOptions::default()
-        },
-    ) {
+    let mut window = match open_visual_window("Claudio OS - One Dollar Board blink") {
         Ok(window) => window,
         Err(error) => {
             eprintln!("window failed: {error}");
@@ -410,16 +401,7 @@ fn run_visual_binary(path: &str) -> ExitCode {
     println!("binary: {path}");
     println!("close the window or press Escape to stop");
 
-    let mut window = match Window::new(
-        "Claudio OS - real binary blink",
-        BOARD_IMAGE_WIDTH,
-        BOARD_IMAGE_HEIGHT,
-        WindowOptions {
-            resize: false,
-            scale: Scale::X2,
-            ..WindowOptions::default()
-        },
-    ) {
+    let mut window = match open_visual_window("Claudio OS - real binary blink") {
         Ok(window) => window,
         Err(error) => {
             eprintln!("window failed: {error}");
@@ -450,6 +432,27 @@ fn run_visual_binary(path: &str) -> ExitCode {
     }
 
     ExitCode::SUCCESS
+}
+
+fn open_visual_window(title: &str) -> Result<Window, minifb::Error> {
+    let mut window = Window::new(
+        title,
+        BOARD_IMAGE_WIDTH,
+        BOARD_IMAGE_HEIGHT,
+        WindowOptions {
+            borderless: true,
+            title: false,
+            resize: true,
+            scale: Scale::FitScreen,
+            scale_mode: ScaleMode::AspectRatioStretch,
+            topmost: true,
+            ..WindowOptions::default()
+        },
+    )?;
+    window.set_position(0, 0);
+    window.set_background_color(247, 243, 232);
+    window.set_target_fps(30);
+    Ok(window)
 }
 
 fn real_binary_led_states(path: &str) -> Result<Vec<bool>, String> {
