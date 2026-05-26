@@ -431,40 +431,24 @@ fn run_visual_blink() -> ExitCode {
 
     let mut buffer = base_image.clone();
 
-    for frame in frames.iter().copied() {
-        if !window.is_open() || window.is_key_down(Key::Escape) {
-            return ExitCode::SUCCESS;
+    while window.is_open() && !window.is_key_down(Key::Escape) {
+        for frame in frames.iter().copied() {
+            if !window.is_open() || window.is_key_down(Key::Escape) {
+                return ExitCode::SUCCESS;
+            }
+
+            buffer.copy_from_slice(&base_image);
+            draw_pinout_overlay(&mut buffer, &frame);
+
+            if let Err(error) =
+                window.update_with_buffer(&buffer, BOARD_IMAGE_WIDTH, BOARD_IMAGE_HEIGHT)
+            {
+                eprintln!("window update failed: {error}");
+                return ExitCode::FAILURE;
+            }
+
+            thread::sleep(Duration::from_millis(450));
         }
-
-        buffer.copy_from_slice(&base_image);
-        draw_pinout_overlay(&mut buffer, &frame);
-
-        if let Err(error) =
-            window.update_with_buffer(&buffer, BOARD_IMAGE_WIDTH, BOARD_IMAGE_HEIGHT)
-        {
-            eprintln!("window update failed: {error}");
-            return ExitCode::FAILURE;
-        }
-
-        thread::sleep(Duration::from_millis(450));
-    }
-
-    for _ in 0..8 {
-        if !window.is_open() || window.is_key_down(Key::Escape) {
-            break;
-        }
-
-        buffer.copy_from_slice(&base_image);
-        draw_pinout_overlay(&mut buffer, &[false; DIGITAL_PIN_COUNT]);
-
-        if let Err(error) =
-            window.update_with_buffer(&buffer, BOARD_IMAGE_WIDTH, BOARD_IMAGE_HEIGHT)
-        {
-            eprintln!("window update failed: {error}");
-            return ExitCode::FAILURE;
-        }
-
-        thread::sleep(Duration::from_millis(100));
     }
 
     ExitCode::SUCCESS
