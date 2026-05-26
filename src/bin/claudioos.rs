@@ -23,6 +23,10 @@ const SW_ZERO_GPIO_OUT: u32 = 0x0000_a623;
 const EBREAK: u32 = 0x0010_0073;
 const DIGITAL_PIN_COUNT: usize = 15;
 const GPIO_ON_COLOR: u32 = 0xf2a900;
+const ONBOARD_LED_X: usize = 112;
+const ONBOARD_LED_Y: usize = 276;
+const ONBOARD_LED_W: usize = 12;
+const ONBOARD_LED_H: usize = 8;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct PinIndicator {
@@ -662,6 +666,11 @@ fn rgba_to_minifb_pixels(bytes: &[u8]) -> Vec<u32> {
 }
 
 fn draw_pinout_overlay(buffer: &mut [u32], frame: &PinFrame) {
+    let pd6_active = indicator_index(Signal::Pd6)
+        .map(|index| frame[index])
+        .unwrap_or(false);
+    draw_onboard_led(buffer, pd6_active);
+
     for (index, indicator) in PIN_INDICATORS.iter().enumerate() {
         let active = frame[index];
         let fill = if active { GPIO_ON_COLOR } else { 0x050505 };
@@ -692,6 +701,28 @@ fn draw_pinout_overlay(buffer: &mut [u32], frame: &PinFrame) {
             active,
         );
     }
+}
+
+fn draw_onboard_led(buffer: &mut [u32], active: bool) {
+    let fill = if active { GPIO_ON_COLOR } else { 0x050505 };
+    draw_rect(
+        buffer,
+        BOARD_IMAGE_WIDTH,
+        ONBOARD_LED_X,
+        ONBOARD_LED_Y,
+        ONBOARD_LED_W,
+        ONBOARD_LED_H,
+        0x050505,
+    );
+    draw_rect(
+        buffer,
+        BOARD_IMAGE_WIDTH,
+        ONBOARD_LED_X + 1,
+        ONBOARD_LED_Y + 1,
+        ONBOARD_LED_W.saturating_sub(2),
+        ONBOARD_LED_H.saturating_sub(2),
+        fill,
+    );
 }
 
 fn blink_pin_frames(repetitions: usize) -> Vec<PinFrame> {
