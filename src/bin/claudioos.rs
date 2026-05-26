@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use board_image::{BOARD_IMAGE_HEIGHT, BOARD_IMAGE_PNG, BOARD_IMAGE_WIDTH};
 use claudioos::{
-    BoardBus, BoardTarget, EventKind, Machine, PinKind, RamBus, RunLimit, StopReason,
+    BoardBus, BoardTarget, EventKind, Machine, PinKind, RamBus, RunLimit, Signal, StopReason,
     ONE_DOLLAR_BOARD_PINOUT,
 };
 use minifb::{Key, Scale, ScaleMode, Window, WindowOptions};
@@ -21,6 +21,159 @@ const ADDI_X2_ONE: u32 = 0x0010_0113;
 const SW_X2_GPIO_OUT: u32 = 0x0020_a623;
 const SW_ZERO_GPIO_OUT: u32 = 0x0000_a623;
 const EBREAK: u32 = 0x0010_0073;
+const DIGITAL_PIN_COUNT: usize = 15;
+const GPIO_ON_COLOR: u32 = 0xf2a900;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PinIndicator {
+    signal: Signal,
+    label: &'static str,
+    x: usize,
+    y: usize,
+    w: usize,
+    h: usize,
+    bit: u8,
+}
+
+const PIN_INDICATORS: [PinIndicator; DIGITAL_PIN_COUNT] = [
+    PinIndicator {
+        signal: Signal::Pc0,
+        label: "0 PC0",
+        x: 33,
+        y: 255,
+        w: 14,
+        h: 15,
+        bit: 0,
+    },
+    PinIndicator {
+        signal: Signal::Pc1,
+        label: "1 PC1",
+        x: 33,
+        y: 294,
+        w: 14,
+        h: 15,
+        bit: 1,
+    },
+    PinIndicator {
+        signal: Signal::Pc2,
+        label: "2 PC2",
+        x: 33,
+        y: 333,
+        w: 14,
+        h: 14,
+        bit: 2,
+    },
+    PinIndicator {
+        signal: Signal::Pc3,
+        label: "3 PC3",
+        x: 33,
+        y: 371,
+        w: 14,
+        h: 15,
+        bit: 3,
+    },
+    PinIndicator {
+        signal: Signal::Pc4,
+        label: "4 PC4",
+        x: 33,
+        y: 410,
+        w: 14,
+        h: 15,
+        bit: 4,
+    },
+    PinIndicator {
+        signal: Signal::Pc5,
+        label: "5 PC5",
+        x: 33,
+        y: 449,
+        w: 14,
+        h: 14,
+        bit: 5,
+    },
+    PinIndicator {
+        signal: Signal::Pc6,
+        label: "6 PC6",
+        x: 33,
+        y: 487,
+        w: 14,
+        h: 15,
+        bit: 6,
+    },
+    PinIndicator {
+        signal: Signal::Pc7,
+        label: "7 PC7",
+        x: 33,
+        y: 526,
+        w: 14,
+        h: 14,
+        bit: 7,
+    },
+    PinIndicator {
+        signal: Signal::Pa1,
+        label: "8 PA1",
+        x: 33,
+        y: 564,
+        w: 14,
+        h: 15,
+        bit: 1,
+    },
+    PinIndicator {
+        signal: Signal::Pa2,
+        label: "9 PA2",
+        x: 33,
+        y: 603,
+        w: 14,
+        h: 15,
+        bit: 2,
+    },
+    PinIndicator {
+        signal: Signal::Pd1,
+        label: "12 PD1",
+        x: 342,
+        y: 333,
+        w: 15,
+        h: 14,
+        bit: 1,
+    },
+    PinIndicator {
+        signal: Signal::Pd7,
+        label: "13 PD7",
+        x: 342,
+        y: 371,
+        w: 15,
+        h: 15,
+        bit: 7,
+    },
+    PinIndicator {
+        signal: Signal::Pd0,
+        label: "14 PD0",
+        x: 342,
+        y: 410,
+        w: 15,
+        h: 14,
+        bit: 0,
+    },
+    PinIndicator {
+        signal: Signal::Pd2,
+        label: "15 PD2",
+        x: 342,
+        y: 449,
+        w: 15,
+        h: 15,
+        bit: 2,
+    },
+    PinIndicator {
+        signal: Signal::Pd6,
+        label: "19 PD6",
+        x: 342,
+        y: 603,
+        w: 15,
+        h: 15,
+        bit: 6,
+    },
+];
+
+type PinFrame = [bool; DIGITAL_PIN_COUNT];
 
 fn main() -> ExitCode {
     let args = env::args().collect::<Vec<_>>();
@@ -153,8 +306,8 @@ fn print_pinout() {
     println!(" +------------------+     +------------------+");
 
     for row in 0..10 {
-        let left = pinout.pin((row + 1) as u8);
-        let right = pinout.pin((20 - row) as u8);
+        let left = pinout.pin(row as u8);
+        let right = pinout.pin((10 + row) as u8);
         println!(" | {} |     | {} |", pin_cell(left), pin_cell(right));
     }
 
@@ -244,7 +397,7 @@ fn run_blink() -> ExitCode {
 fn run_visual_blink() -> ExitCode {
     let pinout = ONE_DOLLAR_BOARD_PINOUT;
     let blink = pinout.blink_pin();
-    let states = blink_states(8);
+    let frames = blink_pin_frames(8);
     let base_image = match decode_board_image() {
         Ok(image) => image,
         Err(error) => {
@@ -253,7 +406,7 @@ fn run_visual_blink() -> ExitCode {
         }
     };
 
-    if states.is_empty() {
+    if frames.is_empty() {
         eprintln!("blink trace did not produce GPIO events");
         return ExitCode::FAILURE;
     }
@@ -278,13 +431,13 @@ fn run_visual_blink() -> ExitCode {
 
     let mut buffer = base_image.clone();
 
-    for led_on in states.iter().copied() {
+    for frame in frames.iter().copied() {
         if !window.is_open() || window.is_key_down(Key::Escape) {
             return ExitCode::SUCCESS;
         }
 
         buffer.copy_from_slice(&base_image);
-        draw_led_overlay(&mut buffer, led_on);
+        draw_pinout_overlay(&mut buffer, &frame);
 
         if let Err(error) =
             window.update_with_buffer(&buffer, BOARD_IMAGE_WIDTH, BOARD_IMAGE_HEIGHT)
@@ -302,7 +455,7 @@ fn run_visual_blink() -> ExitCode {
         }
 
         buffer.copy_from_slice(&base_image);
-        draw_led_overlay(&mut buffer, false);
+        draw_pinout_overlay(&mut buffer, &[false; DIGITAL_PIN_COUNT]);
 
         if let Err(error) =
             window.update_with_buffer(&buffer, BOARD_IMAGE_WIDTH, BOARD_IMAGE_HEIGHT)
@@ -333,6 +486,17 @@ fn run_real_binary(path: &str) -> ExitCode {
     }
 
     let mut machine = Machine::<_, 32>::new(bus);
+    if let Ok(raw_steps) = env::var("CLAUDIOOS_TRACE_STEPS") {
+        let steps = raw_steps.parse::<usize>().unwrap_or(0);
+        for _ in 0..steps {
+            let pc = machine.pc();
+            let reason = machine.step();
+            println!("trace pc=0x{pc:08x} reason={reason:?}");
+            if reason != StopReason::Running {
+                break;
+            }
+        }
+    }
     let reason = machine.run(RunLimit {
         max_cycles: 2_000_000,
     });
@@ -355,6 +519,7 @@ fn run_real_binary(path: &str) -> ExitCode {
     println!("gpio events:");
     for event in events {
         let port = match event.address {
+            0x4001_0810 => "GPIOA",
             0x4001_1010 => "GPIOC",
             0x4001_1410 => "GPIOD",
             _ => "GPIO",
@@ -376,8 +541,8 @@ fn run_real_binary(path: &str) -> ExitCode {
 }
 
 fn run_visual_binary(path: &str) -> ExitCode {
-    let states = match real_binary_led_states(path) {
-        Ok(states) => states,
+    let frames = match real_binary_pin_frames(path) {
+        Ok(frames) => frames,
         Err(error) => {
             eprintln!("{error}");
             return ExitCode::FAILURE;
@@ -391,8 +556,8 @@ fn run_visual_binary(path: &str) -> ExitCode {
         }
     };
 
-    if states.is_empty() {
-        eprintln!("binary trace did not produce LED events");
+    if frames.is_empty() {
+        eprintln!("binary trace did not produce GPIO events");
         return ExitCode::FAILURE;
     }
 
@@ -412,13 +577,13 @@ fn run_visual_binary(path: &str) -> ExitCode {
     let mut buffer = base_image.clone();
 
     while window.is_open() && !window.is_key_down(Key::Escape) {
-        for led_on in states.iter().copied() {
+        for frame in frames.iter().copied() {
             if !window.is_open() || window.is_key_down(Key::Escape) {
                 return ExitCode::SUCCESS;
             }
 
             buffer.copy_from_slice(&base_image);
-            draw_led_overlay(&mut buffer, led_on);
+            draw_pinout_overlay(&mut buffer, &frame);
 
             if let Err(error) =
                 window.update_with_buffer(&buffer, BOARD_IMAGE_WIDTH, BOARD_IMAGE_HEIGHT)
@@ -455,29 +620,25 @@ fn open_visual_window(title: &str) -> Result<Window, minifb::Error> {
     Ok(window)
 }
 
-fn real_binary_led_states(path: &str) -> Result<Vec<bool>, String> {
+fn real_binary_pin_frames(path: &str) -> Result<Vec<PinFrame>, String> {
     let bytes = fs::read(path).map_err(|error| format!("failed to read {path}: {error}"))?;
     let mut bus = BoardBus::<65536, 4096>::new();
     bus.load_flash(&bytes)
         .map_err(|fault| format!("failed to load binary: {fault:?}"))?;
 
-    let mut machine = Machine::<_, 64>::new(bus);
+    let mut machine = Machine::<_, 256>::new(bus);
     let reason = machine.run(RunLimit { max_cycles: 80_000 });
-    let states = machine
-        .events()
-        .filter(|event| event.address == 0x4001_1410)
-        .map(|event| event.value & 0xffff != 0)
-        .collect::<Vec<_>>();
+    let frames = pin_frames_from_events(machine.events());
 
-    if states.is_empty() {
+    if frames.is_empty() {
         return Err(format!(
-            "no LED events found; stop={reason:?} pc=0x{:08x} cycles={}",
+            "no GPIO events found; stop={reason:?} pc=0x{:08x} cycles={}",
             machine.pc(),
             machine.cycles()
         ));
     }
 
-    Ok(states)
+    Ok(frames)
 }
 
 fn decode_board_image() -> Result<Vec<u32>, String> {
@@ -516,14 +677,41 @@ fn rgba_to_minifb_pixels(bytes: &[u8]) -> Vec<u32> {
         .collect()
 }
 
-fn draw_led_overlay(buffer: &mut [u32], led_on: bool) {
-    if led_on {
-        blend_rect(buffer, BOARD_IMAGE_WIDTH, 112, 276, 12, 8, 0x12c958, 155);
+fn draw_pinout_overlay(buffer: &mut [u32], frame: &PinFrame) {
+    for (index, indicator) in PIN_INDICATORS.iter().enumerate() {
+        let active = frame[index];
+        let fill = if active { GPIO_ON_COLOR } else { 0x050505 };
+        let edge = if active { 0x050505 } else { 0xffffff };
+        draw_rect(
+            buffer,
+            BOARD_IMAGE_WIDTH,
+            indicator.x,
+            indicator.y,
+            indicator.w,
+            indicator.h,
+            edge,
+        );
+        draw_rect(
+            buffer,
+            BOARD_IMAGE_WIDTH,
+            indicator.x + 2,
+            indicator.y + 2,
+            indicator.w.saturating_sub(4),
+            indicator.h.saturating_sub(4),
+            fill,
+        );
+        draw_pin_label(
+            buffer,
+            indicator.x + indicator.w + 6,
+            indicator.y + 2,
+            indicator.label,
+            active,
+        );
     }
 }
 
-fn blink_states(repetitions: usize) -> Vec<bool> {
-    let mut states = Vec::with_capacity(repetitions * 2);
+fn blink_pin_frames(repetitions: usize) -> Vec<PinFrame> {
+    let mut frames = Vec::with_capacity(repetitions * 2);
 
     for _ in 0..repetitions {
         let mut bus = RamBus::<8>::new();
@@ -539,62 +727,148 @@ fn blink_states(repetitions: usize) -> Vec<bool> {
         .enumerate()
         {
             if bus.load_word(index, word).is_err() {
-                return states;
+                return frames;
             }
         }
 
         let mut machine = Machine::<_, 8>::new(bus);
         if machine.run(RunLimit { max_cycles: 16 }) != StopReason::Ebreak {
-            return states;
+            return frames;
         }
 
+        let blink_index = indicator_index(Signal::Pd6).unwrap_or(DIGITAL_PIN_COUNT - 1);
         for event in machine.events() {
             if event.kind == EventKind::GpioWrite {
-                states.push(event.value != 0);
+                let mut frame = [false; DIGITAL_PIN_COUNT];
+                frame[blink_index] = event.value != 0;
+                frames.push(frame);
             }
         }
     }
 
-    states
+    frames
 }
 
-fn blend_rect(
-    buffer: &mut [u32],
-    width: usize,
-    x: usize,
-    y: usize,
-    w: usize,
-    h: usize,
-    color: u32,
-    alpha: u32,
-) {
+fn pin_frames_from_events(events: impl Iterator<Item = claudioos::Event>) -> Vec<PinFrame> {
+    let mut frame = [false; DIGITAL_PIN_COUNT];
+    let mut frames = Vec::new();
+
+    for event in events {
+        if event.kind != EventKind::GpioWrite {
+            continue;
+        }
+
+        let Some(port) = gpio_port_from_event_address(event.address) else {
+            continue;
+        };
+
+        let set = event.value & 0xffff;
+        let reset = (event.value >> 16) & 0xffff;
+        for (index, indicator) in PIN_INDICATORS.iter().enumerate() {
+            if indicator_port(indicator.signal) != Some(port) {
+                continue;
+            }
+
+            let mask = 1u32 << indicator.bit;
+            if set & mask != 0 {
+                frame[index] = true;
+            }
+            if reset & mask != 0 {
+                frame[index] = false;
+            }
+        }
+
+        frames.push(frame);
+    }
+
+    frames
+}
+
+fn indicator_index(signal: Signal) -> Option<usize> {
+    PIN_INDICATORS
+        .iter()
+        .position(|indicator| indicator.signal == signal)
+}
+
+fn gpio_port_from_event_address(address: u32) -> Option<char> {
+    match address {
+        0x4001_0810 => Some('A'),
+        0x4001_1010 => Some('C'),
+        0x4001_1410 => Some('D'),
+        _ => None,
+    }
+}
+
+fn indicator_port(signal: Signal) -> Option<char> {
+    match signal {
+        Signal::Pa1 | Signal::Pa2 => Some('A'),
+        Signal::Pc0
+        | Signal::Pc1
+        | Signal::Pc2
+        | Signal::Pc3
+        | Signal::Pc4
+        | Signal::Pc5
+        | Signal::Pc6
+        | Signal::Pc7 => Some('C'),
+        Signal::Pd0 | Signal::Pd1 | Signal::Pd2 | Signal::Pd6 | Signal::Pd7 => Some('D'),
+        _ => None,
+    }
+}
+
+fn draw_rect(buffer: &mut [u32], width: usize, x: usize, y: usize, w: usize, h: usize, color: u32) {
     for yy in y..y + h {
         for xx in x..x + w {
-            blend_pixel(buffer, width, xx as i32, yy as i32, color, alpha);
+            if let Some(pixel) = buffer.get_mut(yy * width + xx) {
+                *pixel = color;
+            }
         }
     }
 }
 
-fn blend_pixel(buffer: &mut [u32], width: usize, x: i32, y: i32, color: u32, alpha: u32) {
-    let index = y as usize * width + x as usize;
-    if let Some(pixel) = buffer.get_mut(index) {
-        *pixel = blend_color(*pixel, color, alpha);
+fn draw_pin_label(buffer: &mut [u32], x: usize, y: usize, label: &str, active: bool) {
+    let color = if active { GPIO_ON_COLOR } else { 0x050505 };
+    let shadow = if active { 0x050505 } else { 0xffffff };
+    draw_text(buffer, BOARD_IMAGE_WIDTH, x + 1, y + 1, label, shadow);
+    draw_text(buffer, BOARD_IMAGE_WIDTH, x, y, label, color);
+}
+
+fn draw_text(buffer: &mut [u32], width: usize, x: usize, y: usize, text: &str, color: u32) {
+    let mut cursor = x;
+    for ch in text.chars() {
+        draw_glyph(buffer, width, cursor, y, ch, color);
+        cursor += 5;
     }
 }
 
-fn blend_color(base: u32, overlay: u32, alpha: u32) -> u32 {
-    let inverse = 255 - alpha;
-    let base_r = (base >> 16) & 0xff;
-    let base_g = (base >> 8) & 0xff;
-    let base_b = base & 0xff;
-    let over_r = (overlay >> 16) & 0xff;
-    let over_g = (overlay >> 8) & 0xff;
-    let over_b = overlay & 0xff;
+fn draw_glyph(buffer: &mut [u32], width: usize, x: usize, y: usize, ch: char, color: u32) {
+    let glyph = glyph_3x5(ch);
+    for (row, bits) in glyph.iter().copied().enumerate() {
+        for col in 0..3 {
+            if bits & (1 << (2 - col)) != 0 {
+                draw_rect(buffer, width, x + col, y + row, 1, 1, color);
+            }
+        }
+    }
+}
 
-    let r = (base_r * inverse + over_r * alpha) / 255;
-    let g = (base_g * inverse + over_g * alpha) / 255;
-    let b = (base_b * inverse + over_b * alpha) / 255;
-    (r << 16) | (g << 8) | b
+fn glyph_3x5(ch: char) -> [u8; 5] {
+    match ch {
+        'A' => [0b010, 0b101, 0b111, 0b101, 0b101],
+        'C' => [0b111, 0b100, 0b100, 0b100, 0b111],
+        'D' => [0b110, 0b101, 0b101, 0b101, 0b110],
+        'P' => [0b110, 0b101, 0b110, 0b100, 0b100],
+        '0' => [0b111, 0b101, 0b101, 0b101, 0b111],
+        '1' => [0b010, 0b110, 0b010, 0b010, 0b111],
+        '2' => [0b111, 0b001, 0b111, 0b100, 0b111],
+        '3' => [0b111, 0b001, 0b111, 0b001, 0b111],
+        '4' => [0b101, 0b101, 0b111, 0b001, 0b001],
+        '5' => [0b111, 0b100, 0b111, 0b001, 0b111],
+        '6' => [0b111, 0b100, 0b111, 0b101, 0b111],
+        '7' => [0b111, 0b001, 0b010, 0b010, 0b010],
+        '8' => [0b111, 0b101, 0b111, 0b101, 0b111],
+        '9' => [0b111, 0b101, 0b111, 0b001, 0b111],
+        _ => [0; 5],
+    }
 }
 
 fn pin_cell(pin: Option<&claudioos::BoardPin>) -> String {
@@ -619,6 +893,7 @@ fn kind_name(kind: PinKind) -> &'static str {
         PinKind::Digital => "digital",
         PinKind::Power => "power",
         PinKind::Ground => "ground",
+        PinKind::NotConnected => "nc",
     }
 }
 

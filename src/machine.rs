@@ -1,4 +1,4 @@
-use crate::bus::{Bus, BusFault, GPIOC_BASE, GPIOD_BASE, GPIO_BSHR_OFFSET, GPIO_OUT};
+use crate::bus::{Bus, BusFault, GPIOA_BASE, GPIOC_BASE, GPIOD_BASE, GPIO_BSHR_OFFSET, GPIO_OUT};
 use crate::instruction::{decode, DecodeError, Instruction};
 use crate::register::{Register, REGISTER_COUNT};
 
@@ -179,14 +179,14 @@ impl<B: Bus, const TRACE: usize> Machine<B, TRACE> {
                 };
             }
             Instruction::Load {
-                width: 4,
+                width,
+                signed,
                 rd,
                 rs1,
                 offset,
-                ..
             } => {
                 let address = self.read_register(rs1).wrapping_add(offset as u32);
-                let value = match self.bus.read32_mut(address) {
+                let value = match load_value(&mut self.bus, address, width, signed) {
                     Ok(value) => value,
                     Err(fault) => return StopReason::BusFault(fault),
                 };
@@ -194,7 +194,7 @@ impl<B: Bus, const TRACE: usize> Machine<B, TRACE> {
                 self.pc = next_pc;
             }
             Instruction::Store {
-                width: 4,
+                width,
                 rs1,
                 rs2,
                 offset,
@@ -210,7 +210,7 @@ impl<B: Bus, const TRACE: usize> Machine<B, TRACE> {
                     });
                 }
 
-                if let Err(fault) = self.bus.write32(address, value) {
+                if let Err(fault) = store_value(&mut self.bus, address, width, value) {
                     return StopReason::BusFault(fault);
                 }
                 self.pc = next_pc;
@@ -233,7 +233,6 @@ impl<B: Bus, const TRACE: usize> Machine<B, TRACE> {
             }
             Instruction::Ebreak => return StopReason::Ebreak,
             Instruction::Ecall => return StopReason::Ecall,
-            other => return StopReason::Unsupported(other),
         }
 
         self.registers[Register::ZERO.index()] = 0;
@@ -318,7 +317,15 @@ impl<B: Bus, const TRACE: usize> Machine<B, TRACE> {
             (1, 4) => {
                 let op = (raw >> 10) & 0x03;
                 let rd = compressed_register((raw >> 7) & 0x07);
-                if op == 2 {
+                if op == 0 {
+                    let shamt = (((raw >> 12) & 1) << 5) | ((raw >> 2) & 0x1f);
+                    let value = self.read_register(rd) >> shamt;
+                    self.write_register(rd, value);
+                } else if op == 1 {
+                    let shamt = (((raw >> 12) & 1) << 5) | ((raw >> 2) & 0x1f);
+                    let value = ((self.read_register(rd) as i32) >> shamt) as u32;
+                    self.write_register(rd, value);
+                } else if op == 2 {
                     let imm = sign_extend_u32(
                         (((raw >> 12) & 1) << 5) as u32 | ((raw >> 2) & 0x1f) as u32,
                         6,
@@ -383,12 +390,20 @@ impl<B: Bus, const TRACE: usize> Machine<B, TRACE> {
                 let rs2 = raw_register((raw >> 2) & 0x1f);
                 if ((raw >> 12) & 1) == 0 {
                     if rs2 == Register::ZERO {
+                        if rd == Register::ZERO {
+                            return StopReason::DecodeFault(DecodeError::UnknownOpcode(
+                                (raw & 0xff) as u8,
+                            ));
+                        }
                         self.pc = self.read_register(rd) & !1;
                     } else {
                         self.write_register(rd, self.read_register(rs2));
                         self.pc = next_pc;
                     }
                 } else if rs2 == Register::ZERO {
+                    if rd == Register::ZERO {
+                        return StopReason::Ebreak;
+                    }
                     self.write_register(Register::RETURN_ADDRESS, next_pc);
                     self.pc = self.read_register(rd) & !1;
                 } else {
@@ -513,8 +528,39 @@ fn sign_extend_u32(value: u32, bits: u8) -> i32 {
 
 fn is_gpio_event_address(address: u32) -> bool {
     address == GPIO_OUT
+        || address == GPIOA_BASE + GPIO_BSHR_OFFSET
         || address == GPIOC_BASE + GPIO_BSHR_OFFSET
         || address == GPIOD_BASE + GPIO_BSHR_OFFSET
+}
+
+fn load_value<B: Bus>(bus: &mut B, address: u32, width: u8, signed: bool) -> Result<u32, BusFault> {
+    match width {
+        1 => {
+            let value = bus.read8(address)? as u32;
+            Ok(if signed {
+                sign_extend_u32(value, 8) as u32
+            } else {
+                value
+            })
+        }
+        2 => {
+            let value = bus.read16(address)? as u32;
+            Ok(if signed {
+                sign_extend_u32(value, 16) as u32
+            } else {
+                value
+            })
+        }
+        _ => bus.read32_mut(address),
+    }
+}
+
+fn store_value<B: Bus>(bus: &mut B, address: u32, width: u8, value: u32) -> Result<(), BusFault> {
+    match width {
+        1 => bus.write8(address, value as u8),
+        2 => bus.write16(address, value as u16),
+        _ => bus.write32(address, value),
+    }
 }
 
 fn branch_taken(kind: u8, lhs: u32, rhs: u32) -> bool {

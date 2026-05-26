@@ -53,13 +53,15 @@ This name is intentional. The project should target the One Dollar Board contrac
 The compatibility layer should therefore be designed around:
 
 - the RV32EC instruction profile;
-- the One Dollar Board 1.004 R1 pinout and observable behavior;
+- the One Dollar Board 1.004 R1 board-level pinout and observable behavior;
 - stable Rust examples;
 - explicit memory and peripheral contracts;
 - emulation before hardware flashing;
 - future board revisions that preserve older projects where practical.
 
 The emulator is not just a debugging utility. It is the compatibility reference for the board ecosystem.
+
+For 1.004 R1, the public connector contract uses board pins `0..19`: `0..9` are PC0-PC7/PA1/PA2, `10` is +3V3, `11` is GND, `12..15` are PD1/PD7/PD0/PD2, `16..18` are NC, and `19` is PD6 / blink LED. Student-facing code should depend on this board contract first and map to chip pins through the selected board revision.
 
 ## Emulator First
 
