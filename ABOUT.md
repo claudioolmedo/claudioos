@@ -18,7 +18,7 @@ Contributions written in any language other than Rust will not be accepted.
 
 This rule applies to the operating system, emulator, tools, examples, build logic, project code, and tests. The goal is to build a complete Rust-first educational stack, not a Rust wrapper around legacy code.
 
-The only accepted Markdown exception is this project overview file.
+Accepted Markdown files are `ABOUT.md` (project philosophy) and `README.md` (how to build and run).
 
 Rust is part of the project identity because it helps the One Dollar Computer ecosystem stay portable, maintainable, and less dependent on any single chip vendor or board revision.
 
@@ -144,7 +144,7 @@ Not accepted:
 - build systems that require C or C++;
 - examples that depend on non-Rust source code;
 - local memory files;
-- generated Markdown planning files;
+- generated Markdown planning files (README.md and ABOUT.md are allowed);
 - changes that tie the project identity to one specific chip vendor.
 
 ## Current Status

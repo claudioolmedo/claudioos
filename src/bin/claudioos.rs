@@ -264,7 +264,7 @@ fn print_help() {
     println!("  visual-blink");
     println!("           Open a native window and show the emulated LED blinking");
     println!("  visual-bin <path>");
-    println!("           Open a native window and blink from a raw board binary trace");
+    println!("           Live-emulate a raw board binary (click onboard Button / Space → HID bootloader)");
     println!("  run-bin <path>");
     println!("           Load a raw board binary and trace GPIO writes");
     println!("  rv32ec-onedollarcomputer run <path>");
