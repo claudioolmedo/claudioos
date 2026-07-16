@@ -201,7 +201,7 @@ fn main() -> ExitCode {
             print_target();
             ExitCode::SUCCESS
         }
-        Some("rv32ec-onedollarboard") => match args.get(2).map(String::as_str) {
+        Some("rv32ec-onedollarcomputer") | Some("rv32ec-onedollarboard") => match args.get(2).map(String::as_str) {
             Some("run") => match args.get(3) {
                 Some(path) => run_real_binary(path),
                 None => {
@@ -258,7 +258,7 @@ fn print_help() {
     println!("Claudio OS");
     println!();
     println!("Commands:");
-    println!("  pinout   Show the One Dollar Board pinout model");
+    println!("  pinout   Show the One Dollar Computer pinout model");
     println!("  target   Show the stable board target contract");
     println!("  blink    Compile-view and emulate the board blink test");
     println!("  visual-blink");
@@ -267,12 +267,12 @@ fn print_help() {
     println!("           Open a native window and blink from a raw board binary trace");
     println!("  run-bin <path>");
     println!("           Load a raw board binary and trace GPIO writes");
-    println!("  rv32ec-onedollarboard run <path>");
+    println!("  rv32ec-onedollarcomputer run <path>");
     println!("           Run a raw binary against the board compatibility target");
-    println!("  rv32ec-onedollarboard visual <path>");
+    println!("  rv32ec-onedollarcomputer visual <path>");
     println!("           Visualize LED activity from the board compatibility target");
-    println!("  rv32ec-onedollarboard model");
-    println!("           Show the One Dollar Board 1.004 model contract");
+    println!("  rv32ec-onedollarcomputer model");
+    println!("           Show the One Dollar Computer 1.004 model contract");
 }
 
 fn print_target() {
@@ -432,7 +432,7 @@ fn run_visual_blink() -> ExitCode {
     );
     println!("close the window or press Escape to stop");
 
-    let mut window = match open_visual_window("Claudio OS - One Dollar Board blink") {
+    let mut window = match open_visual_window("One Dollar Computer") {
         Ok(window) => window,
         Err(error) => {
             eprintln!("window failed: {error}");
@@ -598,7 +598,7 @@ fn run_visual_binary(path: &str) -> ExitCode {
     println!("controls: click the onboard Button (or Space/B) → HID bootloader");
     println!("close the window or press Escape to stop");
 
-    let mut window = match open_visual_window("Claudio OS - real binary") {
+    let mut window = match open_visual_window("One Dollar Computer") {
         Ok(window) => window,
         Err(error) => {
             eprintln!("window failed: {error}");
@@ -797,8 +797,8 @@ fn open_visual_window(title: &str) -> Result<Window, minifb::Error> {
         BOARD_IMAGE_WIDTH,
         BOARD_IMAGE_HEIGHT,
         WindowOptions {
-            borderless: true,
-            title: false,
+            borderless: false,
+            title: true,
             resize: true,
             scale: Scale::FitScreen,
             scale_mode: ScaleMode::AspectRatioStretch,

@@ -1,6 +1,6 @@
 # Claudio OS
 
-Claudio OS is an experimental operating system project for the One Dollar Board, built from scratch as an educational RISC-V platform.
+Claudio OS is an experimental operating system project for the One Dollar Computer, built from scratch as an educational RISC-V platform.
 
 **CLAUDIO OS** means **Collaborative Learning Agentic Universal Device Interface Operating System**.
 
@@ -20,14 +20,14 @@ This rule applies to the operating system, emulator, tools, examples, build logi
 
 The only accepted Markdown exception is this project overview file.
 
-Rust is part of the project identity because it helps the One Dollar Board ecosystem stay portable, maintainable, and less dependent on any single chip vendor or board revision.
+Rust is part of the project identity because it helps the One Dollar Computer ecosystem stay portable, maintainable, and less dependent on any single chip vendor or board revision.
 
 ## Project Goals
 
 Claudio OS is being designed around these goals:
 
 - create a tiny educational operating system from first principles;
-- support the One Dollar Board as the main development target;
+- support the One Dollar Computer as the main development target;
 - provide an emulator that can run board programs before flashing hardware;
 - make embedded programming easier to visualize and debug;
 - keep the architecture portable across compatible RISC-V microcontrollers;
@@ -38,22 +38,22 @@ Claudio OS is being designed around these goals:
 
 Small boards are powerful teaching tools, but their ecosystems often become tied to one specific vendor, SDK, toolchain, or set of examples. Claudio OS is intended to reduce that dependency.
 
-The One Dollar Board should be able to evolve over time while keeping a stable educational and software identity. A Rust-based operating system and emulator can help preserve compatibility, document behavior, and make future hardware revisions easier to support.
+The One Dollar Computer should be able to evolve over time while keeping a stable educational and software identity. A Rust-based operating system and emulator can help preserve compatibility, document behavior, and make future hardware revisions easier to support.
 
 The first generation may be limited. Future generations may have more memory, peripherals, or capabilities. Claudio OS should help connect those generations through a shared programming model and a careful compatibility strategy.
 
-## RV32EC One Dollar Board Emulator
+## One Dollar Computer
 
-The emulator target is **RV32EC One Dollar Board**.
+The emulator target is **One Dollar Computer**.
 
-The first concrete board model is **One Dollar Board 1.004 R1**.
+The first concrete board model is **One Dollar Computer 1.004 R1**.
 
-This name is intentional. The project should target the One Dollar Board contract, not a specific chip identity. A physical board revision may change its microcontroller later, but Rust programs should keep working when the board still provides the same instruction profile, pinout contract, memory expectations, and board behavior.
+This name is intentional. The project should target the One Dollar Computer contract, not a specific chip identity. A physical board revision may change its microcontroller later, but Rust programs should keep working when the board still provides the same instruction profile, pinout contract, memory expectations, and board behavior.
 
 The compatibility layer should therefore be designed around:
 
 - the RV32EC instruction profile;
-- the One Dollar Board 1.004 R1 board-level pinout and observable behavior;
+- the One Dollar Computer 1.004 R1 board-level pinout and observable behavior;
 - stable Rust examples;
 - explicit memory and peripheral contracts;
 - emulation before hardware flashing;
@@ -94,15 +94,15 @@ Initial focus:
 
 The project should grow carefully. New abstractions should only be added when they make the system easier to understand, test, or extend.
 
-## One Dollar Board Compatibility
+## One Dollar Computer Compatibility
 
-The One Dollar Board is the hardware identity of the project.
+The One Dollar Computer is the hardware identity of the project.
 
 Claudio OS should support the idea that board generations can improve over time while keeping older projects meaningful. Compatibility matters because people may build projects, lessons, tools, and examples around early versions of the board.
 
 The project should therefore avoid unnecessary dependence on a single chip name, vendor-specific identity, or fragile assumptions that would make future revisions harder.
 
-The rule is board compatibility first: Rust code should target the One Dollar Board interface. The physical microcontroller is an implementation detail when the board contract remains compatible.
+The rule is board compatibility first: Rust code should target the One Dollar Computer interface. The physical microcontroller is an implementation detail when the board contract remains compatible.
 
 ## Repository Principles
 
@@ -151,7 +151,7 @@ Not accepted:
 
 Claudio OS is early and experimental.
 
-The emulator already runs real One Dollar Board firmware images. The checked-in `testdata/sample.bin` (ODC blink, RV32EC) executes under `cargo test` and:
+The emulator already runs real One Dollar Computer firmware images. The checked-in `testdata/sample.bin` (ODC blink, RV32EC) executes under `cargo test` and:
 
 ```text
 cargo run --release -- run-bin testdata/sample.bin
@@ -164,7 +164,7 @@ Recent foundation work includes: RV32EC decode/execute (including Zicsr and comp
 The long-term vision is a complete educational loop:
 
 1. write Rust code;
-2. compile for the One Dollar Board;
+2. compile for the One Dollar Computer;
 3. run it in the emulator;
 4. inspect board behavior visually;
 5. flash physical hardware;

@@ -22,7 +22,7 @@ pub struct ProjectScope {
 impl ProjectScope {
     pub const CLAUDIO_OS: Self = Self {
         os_name: "Claudio OS",
-        board_name: "One Dollar Board",
+        board_name: "One Dollar Computer",
         architecture: ArchitectureProfile::Rv32ec,
         rules: &[
             DesignRule::BoardFirst,
@@ -71,7 +71,7 @@ mod tests {
         let scope = ProjectScope::CLAUDIO_OS;
 
         assert_eq!(scope.os_name, "Claudio OS");
-        assert_eq!(scope.board_name, "One Dollar Board");
+        assert_eq!(scope.board_name, "One Dollar Computer");
         assert_eq!(scope.architecture, ArchitectureProfile::Rv32ec);
         assert!(scope.is_vendor_neutral());
         assert!(scope.is_rust_only());

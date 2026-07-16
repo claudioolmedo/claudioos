@@ -38,18 +38,18 @@ pub struct BoardModel {
 }
 
 pub const ONE_DOLLAR_BOARD_MODEL_1_004: BoardModel = BoardModel {
-    name: "One Dollar Board",
+    name: "One Dollar Computer",
     revision: "1.004 R1",
-    compatibility_family: "One Dollar Board 1.x",
+    compatibility_family: "One Dollar Computer 1.x",
 };
 
 impl BoardTarget {
     pub const RV32EC_ONE_DOLLAR_BOARD: Self = Self {
-        name: "RV32EC One Dollar Board",
-        cli_name: "rv32ec-onedollarboard",
+        name: "One Dollar Computer",
+        cli_name: "rv32ec-onedollarcomputer",
         model: ONE_DOLLAR_BOARD_MODEL_1_004,
         instruction_set: InstructionSet::Rv32ec,
-        // One Dollar Board 1.004 contract (CH32V003-class): 16 KiB flash, 2 KiB RAM.
+        // One Dollar Computer 1.004 contract (CH32V003-class): 16 KiB flash, 2 KiB RAM.
         // BoardBus generics may allocate larger windows for tooling; this is the
         // portable contract student programs should assume.
         flash_bytes: 16_384,
@@ -106,8 +106,8 @@ mod tests {
     fn names_board_target_without_vendor_identity() {
         let target = BoardTarget::RV32EC_ONE_DOLLAR_BOARD;
 
-        assert_eq!(target.name, "RV32EC One Dollar Board");
-        assert_eq!(target.cli_name, "rv32ec-onedollarboard");
+        assert_eq!(target.name, "One Dollar Computer");
+        assert_eq!(target.cli_name, "rv32ec-onedollarcomputer");
         assert_eq!(target.model.revision, "1.004 R1");
         assert_eq!(target.instruction_set.name(), "RV32EC");
         assert!(target.keeps_programs_portable());

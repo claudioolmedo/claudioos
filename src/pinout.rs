@@ -86,7 +86,7 @@ impl Pinout {
 }
 
 pub const ONE_DOLLAR_BOARD_PINOUT: Pinout = Pinout {
-    board_name: "One Dollar Board",
+    board_name: "One Dollar Computer",
     revision: "1.004 R1",
     connector_name: "ODB Port",
     auxiliary_connector_name: "RJ45",
