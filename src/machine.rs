@@ -26,6 +26,7 @@ pub enum StopReason {
     Ebreak,
     Ecall,
     MaxCycles,
+    SystemReset,
     DecodeFault(DecodeError),
     BusFault(BusFault),
     Unsupported(Instruction),
@@ -100,6 +101,52 @@ impl<B: Bus, const TRACE: usize> Machine<B, TRACE> {
     }
 
     pub fn step(&mut self) -> StopReason {
+        match self.try_take_interrupt() {
+            Ok(true) => {
+                self.cycles = self.cycles.wrapping_add(1);
+                return self.after_step(StopReason::Running);
+            }
+            Ok(false) => {}
+            Err(fault) => return StopReason::BusFault(fault),
+        }
+
+        let reason = self.step_instruction();
+        self.after_step(reason)
+    }
+
+    fn after_step(&mut self, reason: StopReason) -> StopReason {
+        if self.bus.take_system_reset() {
+            StopReason::SystemReset
+        } else {
+            reason
+        }
+    }
+
+    fn try_take_interrupt(&mut self) -> Result<bool, BusFault> {
+        // mstatus.MIE
+        if self.mstatus & 0x8 == 0 {
+            return Ok(false);
+        }
+        let Some(irq) = self.bus.pending_interrupt() else {
+            return Ok(false);
+        };
+
+        // QingKe vectored table stores handler addresses at mtvec_base + 4*irq.
+        let base = self.mtvec & !0x3;
+        let vector_addr = base.wrapping_add(irq.wrapping_mul(4));
+        let handler = self.bus.read32(vector_addr)?;
+        if handler == 0 {
+            return Ok(false);
+        }
+
+        self.mepc = self.pc;
+        let mie = (self.mstatus >> 3) & 1;
+        self.mstatus = (self.mstatus & !(1 << 3)) | (mie << 7);
+        self.pc = handler;
+        Ok(true)
+    }
+
+    fn step_instruction(&mut self) -> StopReason {
         let low = match self.bus.read16(self.pc) {
             Ok(raw) => raw,
             Err(fault) => return StopReason::BusFault(fault),
@@ -120,6 +167,9 @@ impl<B: Bus, const TRACE: usize> Machine<B, TRACE> {
 
         // MRET
         if raw == 0x3020_0073 {
+            let mpie = (self.mstatus >> 7) & 1;
+            self.mstatus = (self.mstatus & !(1 << 3)) | (mpie << 3);
+            self.mstatus |= 1 << 7;
             self.pc = self.mepc;
             return StopReason::Running;
         }
@@ -758,6 +808,34 @@ mod tests {
         assert!(
             led_on_events >= 1 && led_off_events >= 1,
             "expected PD6 blink toggles, on={led_on_events} off={led_off_events}"
+        );
+    }
+
+    #[test]
+    fn sample_bin_button_enters_bootloader_via_exti() {
+        let bytes = include_bytes!("../testdata/sample.bin");
+        let mut bus = BoardBus::<16384, 2048>::new();
+        bus.load_flash(bytes).unwrap();
+
+        let mut machine = Machine::<_, 256>::new(bus);
+        // Reach main loop with interrupts armed.
+        let reason = machine.run(RunLimit {
+            max_cycles: 200_000,
+        });
+        assert!(
+            matches!(reason, StopReason::MaxCycles),
+            "setup stop: {reason:?} pc=0x{:08x}",
+            machine.pc()
+        );
+
+        machine.bus_mut().press_boot_button();
+        let reason = machine.run(RunLimit {
+            max_cycles: 5_000_000,
+        });
+        assert_eq!(reason, StopReason::SystemReset, "pc=0x{:08x}", machine.pc());
+        assert!(
+            machine.bus().bootloader_magic_set(),
+            "expected 0x12345678 soft-reboot magic at 0x20000400"
         );
     }
 }

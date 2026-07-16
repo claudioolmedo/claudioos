@@ -157,7 +157,7 @@ The emulator already runs real One Dollar Board firmware images. The checked-in 
 cargo run --release -- run-bin testdata/sample.bin
 ```
 
-Recent foundation work includes: RV32EC decode/execute (including Zicsr and compressed XOR/SRA), board bus modeling (GPIO/SysTick/RCC), pinout visualization, and active-low LED semantics for board pin 19 / PD6.
+Recent foundation work includes: RV32EC decode/execute (including Zicsr and compressed XOR/SRA), board bus modeling (GPIO/SysTick/RCC/EXTI/PFIC), pinout visualization, active-low LED semantics for board pin 19 / PD6, and board pin 13 button → HID bootloader soft-reboot on real ODC firmware images (`visual-bin`, Space/B).
 
 ## Long-Term Vision
 

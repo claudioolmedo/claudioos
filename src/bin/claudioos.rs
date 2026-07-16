@@ -14,7 +14,7 @@ use claudioos::{
     BoardBus, BoardTarget, EventKind, Machine, PinKind, RamBus, RunLimit, Signal, StopReason,
     ONE_DOLLAR_BOARD_PINOUT,
 };
-use minifb::{Key, Scale, ScaleMode, Window, WindowOptions};
+use minifb::{Key, MouseButton, MouseMode, Scale, ScaleMode, Window, WindowOptions};
 
 const LUI_X1_GPIO: u32 = 0x4001_10b7;
 const ADDI_X2_ONE: u32 = 0x0010_0113;
@@ -23,10 +23,17 @@ const SW_ZERO_GPIO_OUT: u32 = 0x0000_a623;
 const EBREAK: u32 = 0x0010_0073;
 const DIGITAL_PIN_COUNT: usize = 15;
 const GPIO_ON_COLOR: u32 = 0xf2a900;
+const ONBOARD_LED_ON_COLOR: u32 = 0x22c55e;
 const ONBOARD_LED_X: usize = 112;
 const ONBOARD_LED_Y: usize = 276;
 const ONBOARD_LED_W: usize = 12;
 const ONBOARD_LED_H: usize = 8;
+
+/// Onboard tactile switch on the board art (silkscreen "Button").
+const ONBOARD_BUTTON_X: usize = 175;
+const ONBOARD_BUTTON_Y: usize = 208;
+const ONBOARD_BUTTON_W: usize = 45;
+const ONBOARD_BUTTON_H: usize = 40;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct PinIndicator {
@@ -560,10 +567,10 @@ fn run_real_binary(path: &str) -> ExitCode {
 }
 
 fn run_visual_binary(path: &str) -> ExitCode {
-    let frames = match real_binary_pin_frames(path) {
-        Ok(frames) => frames,
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
         Err(error) => {
-            eprintln!("{error}");
+            eprintln!("failed to read {path}: {error}");
             return ExitCode::FAILURE;
         }
     };
@@ -575,17 +582,23 @@ fn run_visual_binary(path: &str) -> ExitCode {
         }
     };
 
-    if frames.is_empty() {
-        eprintln!("binary trace did not produce GPIO events");
+    let mut bus = BoardBus::<65536, 4096>::new();
+    if let Err(fault) = bus.load_flash(&bytes) {
+        eprintln!("failed to load binary: {fault:?}");
         return ExitCode::FAILURE;
     }
 
+    let mut machine = Machine::<_, 256>::new(bus);
+    let mut bootloader_mode = false;
+    let mut button_held = false;
+
     println!("Claudio OS visual binary");
     println!("target: {}", BoardTarget::RV32EC_ONE_DOLLAR_BOARD.name);
-    println!("binary: {path}");
+    println!("binary: {path} ({} bytes, unmodified)", bytes.len());
+    println!("controls: click the onboard Button (or Space/B) → HID bootloader");
     println!("close the window or press Escape to stop");
 
-    let mut window = match open_visual_window("Claudio OS - real binary blink") {
+    let mut window = match open_visual_window("Claudio OS - real binary") {
         Ok(window) => window,
         Err(error) => {
             eprintln!("window failed: {error}");
@@ -594,28 +607,188 @@ fn run_visual_binary(path: &str) -> ExitCode {
     };
 
     let mut buffer = base_image.clone();
+    let steps_per_frame = 80_000u64;
 
     while window.is_open() && !window.is_key_down(Key::Escape) {
-        for frame in frames.iter().copied() {
-            if !window.is_open() || window.is_key_down(Key::Escape) {
-                return ExitCode::SUCCESS;
+        // Momentary switch: pressed only while key/mouse is held; release restores idle look.
+        let want_button = window.is_key_down(Key::Space)
+            || window.is_key_down(Key::B)
+            || mouse_on_boot_button(&window);
+
+        if want_button && !button_held {
+            if !bootloader_mode {
+                machine.bus_mut().press_boot_button();
+                println!("button PD7 pressed → EXTI bootloader path");
             }
-
-            buffer.copy_from_slice(&base_image);
-            draw_pinout_overlay(&mut buffer, &frame);
-
-            if let Err(error) =
-                window.update_with_buffer(&buffer, BOARD_IMAGE_WIDTH, BOARD_IMAGE_HEIGHT)
-            {
-                eprintln!("window update failed: {error}");
-                return ExitCode::FAILURE;
+            button_held = true;
+        } else if !want_button && button_held {
+            if !bootloader_mode {
+                machine.bus_mut().release_boot_button();
             }
-
-            thread::sleep(Duration::from_millis(450));
+            button_held = false;
         }
+
+        if !bootloader_mode {
+            for _ in 0..steps_per_frame {
+                match machine.step() {
+                    StopReason::Running => {}
+                    StopReason::SystemReset => {
+                        if machine.bus().bootloader_magic_set() {
+                            bootloader_mode = true;
+                            // Keep electrical button state in sync with the physical control.
+                            if !want_button {
+                                machine.bus_mut().release_boot_button();
+                                button_held = false;
+                            }
+                            println!("HID bootloader active (soft-reboot magic 0x12345678)");
+                        } else {
+                            // Plain reset: restart user image from vector 0.
+                            machine = Machine::<_, 256>::new({
+                                let mut bus = BoardBus::<65536, 4096>::new();
+                                bus.load_flash(&bytes).unwrap();
+                                bus
+                            });
+                            button_held = false;
+                        }
+                        break;
+                    }
+                    StopReason::Ebreak | StopReason::Ecall | StopReason::MaxCycles => break,
+                    StopReason::DecodeFault(fault) => {
+                        eprintln!("decode fault at pc=0x{:08x}: {fault:?}", machine.pc());
+                        return ExitCode::FAILURE;
+                    }
+                    StopReason::BusFault(fault) => {
+                        eprintln!("bus fault at pc=0x{:08x}: {fault:?}", machine.pc());
+                        return ExitCode::FAILURE;
+                    }
+                    StopReason::Unsupported(inst) => {
+                        eprintln!("unsupported at pc=0x{:08x}: {inst:?}", machine.pc());
+                        return ExitCode::FAILURE;
+                    }
+                }
+            }
+        }
+
+        let frame = if bootloader_mode {
+            bootloader_pin_frame(want_button)
+        } else {
+            live_pin_frame(machine.bus())
+        };
+
+        buffer.copy_from_slice(&base_image);
+        draw_pinout_overlay(&mut buffer, &frame);
+        if bootloader_mode {
+            draw_bootloader_banner(&mut buffer);
+        }
+        // Visual press feedback only while the control is held down.
+        if want_button {
+            draw_boot_button_pressed(&mut buffer);
+        }
+
+        if let Err(error) =
+            window.update_with_buffer(&buffer, BOARD_IMAGE_WIDTH, BOARD_IMAGE_HEIGHT)
+        {
+            eprintln!("window update failed: {error}");
+            return ExitCode::FAILURE;
+        }
+
+        thread::sleep(Duration::from_millis(16));
     }
 
     ExitCode::SUCCESS
+}
+
+fn live_pin_frame(bus: &BoardBus<65536, 4096>) -> PinFrame {
+    let mut frame = [false; DIGITAL_PIN_COUNT];
+    for (index, indicator) in PIN_INDICATORS.iter().enumerate() {
+        let level = match indicator.signal {
+            Signal::Pa1 | Signal::Pa2 => (bus.gpio_a().out >> indicator.bit) & 1,
+            Signal::Pc0
+            | Signal::Pc1
+            | Signal::Pc2
+            | Signal::Pc3
+            | Signal::Pc4
+            | Signal::Pc5
+            | Signal::Pc6
+            | Signal::Pc7 => (bus.gpio_c().out >> indicator.bit) & 1,
+            Signal::Pd0 | Signal::Pd1 | Signal::Pd2 | Signal::Pd6 => {
+                (bus.gpio_d().out >> indicator.bit) & 1
+            }
+            Signal::Pd7 => (bus.gpio_d().indr >> indicator.bit) & 1,
+            _ => 0,
+        };
+        // Indicator lit when electrical high (PD6 LED overlay inverts separately).
+        frame[index] = level != 0;
+    }
+    frame
+}
+
+fn bootloader_pin_frame(button_down: bool) -> PinFrame {
+    let mut frame = [false; DIGITAL_PIN_COUNT];
+    if let Some(index) = indicator_index(Signal::Pd6) {
+        // Real HID bootloader: PD6 is push-pull out, OUTDR left at 0 after CFGLR setup
+        // (only DPU/PD7 get BSHR 0xA0). Active-low LED => electrical low => ON.
+        frame[index] = false;
+    }
+    if let Some(index) = indicator_index(Signal::Pd7) {
+        frame[index] = !button_down;
+    }
+    frame
+}
+
+fn mouse_on_boot_button(window: &Window) -> bool {
+    if !window.get_mouse_down(MouseButton::Left) {
+        return false;
+    }
+    let Some((x, y)) = mouse_buffer_pos(window) else {
+        return false;
+    };
+    x >= ONBOARD_BUTTON_X
+        && x < ONBOARD_BUTTON_X + ONBOARD_BUTTON_W
+        && y >= ONBOARD_BUTTON_Y
+        && y < ONBOARD_BUTTON_Y + ONBOARD_BUTTON_H
+}
+
+fn mouse_buffer_pos(window: &Window) -> Option<(usize, usize)> {
+    let (mx, my) = window.get_mouse_pos(MouseMode::Clamp)?;
+    let (ww, wh) = window.get_size();
+    if ww == 0 || wh == 0 {
+        return None;
+    }
+    let x = ((mx as f32) * (BOARD_IMAGE_WIDTH as f32) / (ww as f32)) as usize;
+    let y = ((my as f32) * (BOARD_IMAGE_HEIGHT as f32) / (wh as f32)) as usize;
+    Some((
+        x.min(BOARD_IMAGE_WIDTH.saturating_sub(1)),
+        y.min(BOARD_IMAGE_HEIGHT.saturating_sub(1)),
+    ))
+}
+
+fn draw_boot_button_pressed(buffer: &mut [u32]) {
+    // Pressed look: ring + darker plunger over the silkscreen Button.
+    draw_rect(
+        buffer,
+        BOARD_IMAGE_WIDTH,
+        ONBOARD_BUTTON_X,
+        ONBOARD_BUTTON_Y,
+        ONBOARD_BUTTON_W,
+        ONBOARD_BUTTON_H,
+        0x2ecc71,
+    );
+    draw_rect(
+        buffer,
+        BOARD_IMAGE_WIDTH,
+        ONBOARD_BUTTON_X + 10,
+        ONBOARD_BUTTON_Y + 10,
+        ONBOARD_BUTTON_W.saturating_sub(20),
+        ONBOARD_BUTTON_H.saturating_sub(20),
+        0x1b4332,
+    );
+}
+
+fn draw_bootloader_banner(buffer: &mut [u32]) {
+    // Simple solid bar + label region near the top of the board art.
+    draw_rect(buffer, BOARD_IMAGE_WIDTH, 40, 20, 310, 36, 0x1b4332);
+    draw_pin_label(buffer, 52, 30, "HID BOOTLOADER", true);
 }
 
 fn open_visual_window(title: &str) -> Result<Window, minifb::Error> {
@@ -639,6 +812,7 @@ fn open_visual_window(title: &str) -> Result<Window, minifb::Error> {
     Ok(window)
 }
 
+#[allow(dead_code)]
 fn real_binary_pin_frames(path: &str) -> Result<Vec<PinFrame>, String> {
     let bytes = fs::read(path).map_err(|error| format!("failed to read {path}: {error}"))?;
     let mut bus = BoardBus::<65536, 4096>::new();
@@ -738,7 +912,7 @@ fn draw_pinout_overlay(buffer: &mut [u32], frame: &PinFrame) {
 }
 
 fn draw_onboard_led(buffer: &mut [u32], active: bool) {
-    let fill = if active { GPIO_ON_COLOR } else { 0x050505 };
+    let fill = if active { ONBOARD_LED_ON_COLOR } else { 0x050505 };
     draw_rect(
         buffer,
         BOARD_IMAGE_WIDTH,
@@ -798,6 +972,7 @@ fn blink_pin_frames(repetitions: usize) -> Vec<PinFrame> {
     frames
 }
 
+#[allow(dead_code)]
 fn pin_frames_from_events(events: impl Iterator<Item = claudioos::Event>) -> Vec<PinFrame> {
     let mut frame = [false; DIGITAL_PIN_COUNT];
     let mut frames = Vec::new();
@@ -839,6 +1014,7 @@ fn indicator_index(signal: Signal) -> Option<usize> {
         .position(|indicator| indicator.signal == signal)
 }
 
+#[allow(dead_code)]
 fn gpio_port_from_event_address(address: u32) -> Option<char> {
     match address {
         0x4001_0810 => Some('A'),
@@ -848,6 +1024,7 @@ fn gpio_port_from_event_address(address: u32) -> Option<char> {
     }
 }
 
+#[allow(dead_code)]
 fn indicator_port(signal: Signal) -> Option<char> {
     match signal {
         Signal::Pa1 | Signal::Pa2 => Some('A'),

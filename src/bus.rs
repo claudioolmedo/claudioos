@@ -29,6 +29,16 @@ pub trait Bus {
     fn read8(&mut self, address: u32) -> Result<u8, BusFault>;
     fn write8(&mut self, address: u32, value: u8) -> Result<(), BusFault>;
 
+    /// Pending external IRQ number (QingKe / board PFIC), if any.
+    fn pending_interrupt(&mut self) -> Option<u32> {
+        None
+    }
+
+    /// Consume a system-reset request (PFIC SCTLR SYSRESET).
+    fn take_system_reset(&mut self) -> bool {
+        false
+    }
+
     fn read16(&mut self, address: u32) -> Result<u16, BusFault> {
         if address & 0x01 != 0 {
             return Err(BusFault::Unaligned { address });
@@ -176,14 +186,28 @@ pub struct BoardBus<const FLASH: usize, const RAM: usize> {
     i2c1_tx: [u8; SERIAL_BUFFER_BYTES],
     i2c1_tx_len: usize,
     dma_transfer_count: u32,
+    /// Soft system reset requested via PFIC->SCTLR bit 31.
+    system_reset: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct GpioPort {
     pub cfglr: u32,
     pub out: u32,
+    /// Pin input levels (INDR). Board button PD7 defaults to pulled-up.
+    pub indr: u32,
     pub bshr_writes: u32,
 }
+
+/// EXTI / PFIC addresses used by the ODC bootloader-button path.
+const EXTI_INTENR: u32 = EXTI_BASE;
+const EXTI_FTENR: u32 = EXTI_BASE + 0x0c;
+const EXTI_INTFR: u32 = EXTI_BASE + 0x14;
+const PFIC_IENR1: u32 = 0xe000_e100;
+const PFIC_SCTLR: u32 = 0xe000_ed10;
+const BOOT_BUTTON_BIT: u32 = 1 << 7;
+const EXTI7_0_IRQ: u32 = 20;
+const EXTI7_0_IRQ_BIT: u32 = 1 << EXTI7_0_IRQ;
 
 impl<const FLASH: usize, const RAM: usize> BoardBus<FLASH, RAM> {
     pub const RAM_BASE: u32 = 0x2000_0000;
@@ -198,16 +222,20 @@ impl<const FLASH: usize, const RAM: usize> BoardBus<FLASH, RAM> {
             gpio_a: GpioPort {
                 cfglr: 0,
                 out: 0,
+                indr: 0,
                 bshr_writes: 0,
             },
             gpio_c: GpioPort {
                 cfglr: 0,
                 out: 0,
+                indr: 0,
                 bshr_writes: 0,
             },
             gpio_d: GpioPort {
                 cfglr: 0,
                 out: 0,
+                // Board pin 13 / PD7: pull-up, released = high.
+                indr: BOOT_BUTTON_BIT,
                 bshr_writes: 0,
             },
             rcc_ctlr: 0x0200_0000,
@@ -227,6 +255,39 @@ impl<const FLASH: usize, const RAM: usize> BoardBus<FLASH, RAM> {
             i2c1_tx: [0; SERIAL_BUFFER_BYTES],
             i2c1_tx_len: 0,
             dma_transfer_count: 0,
+            system_reset: false,
+        }
+    }
+
+    /// Press board pin 13 (PD7): falling edge → EXTI7 → bootloader path in firmware.
+    pub fn press_boot_button(&mut self) {
+        let was_high = self.gpio_d.indr & BOOT_BUTTON_BIT != 0;
+        self.gpio_d.indr &= !BOOT_BUTTON_BIT;
+        if !was_high {
+            return;
+        }
+        let ftenr = self.read_stored_mmio(EXTI_FTENR).unwrap_or(0);
+        if ftenr & BOOT_BUTTON_BIT == 0 {
+            return;
+        }
+        let intfr = self.read_stored_mmio(EXTI_INTFR).unwrap_or(0);
+        self.write_stored_mmio(EXTI_INTFR, intfr | BOOT_BUTTON_BIT);
+    }
+
+    /// Release board pin 13 (PD7).
+    pub fn release_boot_button(&mut self) {
+        self.gpio_d.indr |= BOOT_BUTTON_BIT;
+    }
+
+    pub fn boot_button_pressed(&self) -> bool {
+        self.gpio_d.indr & BOOT_BUTTON_BIT == 0
+    }
+
+    /// Soft-reboot magic written by firmware before PFIC system reset.
+    pub fn bootloader_magic_set(&self) -> bool {
+        match self.read32(Self::RAM_BASE + 0x400) {
+            Ok(value) => value == 0x1234_5678,
+            Err(_) => false,
         }
     }
 
@@ -348,6 +409,17 @@ impl<const FLASH: usize, const RAM: usize> BoardBus<FLASH, RAM> {
 
         match address {
             0xe000_f000 => self.systick_ctlr = value,
+            PFIC_SCTLR => {
+                self.write_stored_mmio(address, value);
+                if value & (1 << 31) != 0 {
+                    self.system_reset = true;
+                }
+            }
+            EXTI_INTFR => {
+                // Write-1-to-clear pending bits.
+                let current = self.read_stored_mmio(EXTI_INTFR).unwrap_or(0);
+                self.write_stored_mmio(EXTI_INTFR, current & !value);
+            }
             0x4002_1000 => self.rcc_ctlr = value | 0x0300_0003,
             0x4002_1004 => self.rcc_cfgr0 = (value & !0x0c) | 0x08,
             0x4002_1008 => {}
@@ -463,6 +535,25 @@ impl<const FLASH: usize, const RAM: usize> Default for BoardBus<FLASH, RAM> {
 }
 
 impl<const FLASH: usize, const RAM: usize> Bus for BoardBus<FLASH, RAM> {
+    fn pending_interrupt(&mut self) -> Option<u32> {
+        let intenr = self.read_stored_mmio(EXTI_INTENR).unwrap_or(0);
+        let intfr = self.read_stored_mmio(EXTI_INTFR).unwrap_or(0);
+        if intenr & intfr & BOOT_BUTTON_BIT == 0 {
+            return None;
+        }
+        let ienr1 = self.read_stored_mmio(PFIC_IENR1).unwrap_or(0);
+        if ienr1 & EXTI7_0_IRQ_BIT == 0 {
+            return None;
+        }
+        Some(EXTI7_0_IRQ)
+    }
+
+    fn take_system_reset(&mut self) -> bool {
+        let pending = self.system_reset;
+        self.system_reset = false;
+        pending
+    }
+
     fn read8(&mut self, address: u32) -> Result<u8, BusFault> {
         let aligned = address & !0x03;
         if is_peripheral_mmio(aligned) {
@@ -548,7 +639,8 @@ fn read_gpio(port: &GpioPort, base: u32, address: u32) -> Option<u32> {
     let offset = address.checked_sub(base)?;
     match offset {
         0x00 => Some(port.cfglr),
-        0x08 | GPIO_OUT_OFFSET => Some(port.out),
+        0x08 => Some(port.indr), // INDR
+        GPIO_OUT_OFFSET => Some(port.out),
         GPIO_BSHR_OFFSET | GPIO_BCR_OFFSET => Some(port.out),
         _ if offset < 0x18 => Some(0),
         _ => None,
@@ -562,20 +654,35 @@ fn write_gpio(port: &mut GpioPort, base: u32, address: u32, value: u32) -> bool 
 
     match offset {
         0x00 => port.cfglr = value,
-        GPIO_OUT_OFFSET => port.out = value,
+        GPIO_OUT_OFFSET => {
+            port.out = value;
+            sync_indr_from_out(port, base);
+        }
         GPIO_BSHR_OFFSET => {
             port.bshr_writes = port.bshr_writes.wrapping_add(1);
             apply_bshr(&mut port.out, value);
+            sync_indr_from_out(port, base);
         }
         GPIO_BCR_OFFSET => {
             port.bshr_writes = port.bshr_writes.wrapping_add(1);
             port.out &= !(value & 0xffff);
+            sync_indr_from_out(port, base);
         }
         _ if offset < 0x18 => {}
         _ => return false,
     }
 
     true
+}
+
+fn sync_indr_from_out(port: &mut GpioPort, base: u32) {
+    // Keep software-driven button input on PD7; mirror driven outputs elsewhere.
+    if base == GPIOD_BASE {
+        let button = port.indr & BOOT_BUTTON_BIT;
+        port.indr = (port.out & !BOOT_BUTTON_BIT) | button;
+    } else {
+        port.indr = port.out;
+    }
 }
 
 fn push_byte(buffer: &mut [u8; SERIAL_BUFFER_BYTES], len: &mut usize, value: u8) {
@@ -695,5 +802,21 @@ mod tests {
         assert_eq!(bus.read8(dst + 1).unwrap(), 8);
         assert_eq!(bus.read8(dst + 2).unwrap(), 7);
         assert_eq!(bus.read8(dst + 3).unwrap(), 6);
+    }
+
+    #[test]
+    fn boot_button_sets_exti_pending_when_armed() {
+        let mut bus = BoardBus::<64, 2048>::new();
+        bus.write32(EXTI_FTENR, BOOT_BUTTON_BIT).unwrap();
+        bus.write32(EXTI_INTENR, BOOT_BUTTON_BIT).unwrap();
+        bus.write32(PFIC_IENR1, EXTI7_0_IRQ_BIT).unwrap();
+
+        assert!(bus.pending_interrupt().is_none());
+        bus.press_boot_button();
+        assert_eq!(bus.pending_interrupt(), Some(EXTI7_0_IRQ));
+        assert!(bus.boot_button_pressed());
+
+        bus.write32(EXTI_INTFR, BOOT_BUTTON_BIT).unwrap();
+        assert!(bus.pending_interrupt().is_none());
     }
 }
