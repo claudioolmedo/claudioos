@@ -473,7 +473,7 @@ fn run_real_binary(path: &str) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    let mut machine = Machine::<_, 32>::new(bus);
+    let mut machine = Machine::<_, 256>::new(bus);
     if let Ok(raw_steps) = env::var("CLAUDIOOS_TRACE_STEPS") {
         let steps = raw_steps.parse::<usize>().unwrap_or(0);
         for _ in 0..steps {
@@ -485,9 +485,11 @@ fn run_real_binary(path: &str) -> ExitCode {
             }
         }
     }
-    let reason = machine.run(RunLimit {
-        max_cycles: 2_000_000,
-    });
+    let max_cycles = env::var("CLAUDIOOS_MAX_CYCLES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(5_000_000);
+    let reason = machine.run(RunLimit { max_cycles });
     let events = machine.events().collect::<Vec<_>>();
 
     println!("Claudio OS binary run");
@@ -504,8 +506,10 @@ fn run_real_binary(path: &str) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
+    let mut led_toggles = 0u32;
+    let mut led_on = false;
     println!("gpio events:");
-    for event in events {
+    for event in &events {
         let port = match event.address {
             0x4001_0810 => "GPIOA",
             0x4001_1010 => "GPIOC",
@@ -523,9 +527,36 @@ fn run_real_binary(path: &str) -> ExitCode {
             "cycle {:>8}: {} {} value=0x{:08x}",
             event.cycle, port, action, event.value
         );
+
+        // Board pin 19 / PD6: active-low LED.
+        // logical ON  => electrical reset (BSHR bit 22)
+        // logical OFF => electrical set   (BSHR bit 6)
+        if event.address == 0x4001_1410 {
+            if event.value & (1 << (6 + 16)) != 0 {
+                led_on = true;
+                led_toggles += 1;
+            }
+            if event.value & (1 << 6) != 0 {
+                led_on = false;
+                led_toggles += 1;
+            }
+        }
     }
 
-    ExitCode::SUCCESS
+    println!();
+    println!(
+        "blink LED (pin 19 / PD6): {} toggles, last={}",
+        led_toggles,
+        if led_on { "on" } else { "off" }
+    );
+
+    if matches!(reason, StopReason::MaxCycles) && led_toggles >= 2 {
+        ExitCode::SUCCESS
+    } else if led_toggles >= 2 {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
 }
 
 fn run_visual_binary(path: &str) -> ExitCode {
@@ -615,7 +646,9 @@ fn real_binary_pin_frames(path: &str) -> Result<Vec<PinFrame>, String> {
         .map_err(|fault| format!("failed to load binary: {fault:?}"))?;
 
     let mut machine = Machine::<_, 256>::new(bus);
-    let reason = machine.run(RunLimit { max_cycles: 80_000 });
+    let reason = machine.run(RunLimit {
+        max_cycles: 2_000_000,
+    });
     let frames = pin_frames_from_events(machine.events());
 
     if frames.is_empty() {
@@ -666,10 +699,11 @@ fn rgba_to_minifb_pixels(bytes: &[u8]) -> Vec<u32> {
 }
 
 fn draw_pinout_overlay(buffer: &mut [u32], frame: &PinFrame) {
-    let pd6_active = indicator_index(Signal::Pd6)
+    // PD6 frame bit tracks electrical level; onboard LED is active-low.
+    let pd6_electrical_high = indicator_index(Signal::Pd6)
         .map(|index| frame[index])
         .unwrap_or(false);
-    draw_onboard_led(buffer, pd6_active);
+    draw_onboard_led(buffer, !pd6_electrical_high);
 
     for (index, indicator) in PIN_INDICATORS.iter().enumerate() {
         let active = frame[index];

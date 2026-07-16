@@ -118,27 +118,82 @@ impl<B: Bus, const TRACE: usize> Machine<B, TRACE> {
         self.cycles = self.cycles.wrapping_add(1);
         let next_pc = self.pc.wrapping_add(4);
 
+        // MRET
         if raw == 0x3020_0073 {
             self.pc = self.mepc;
             return StopReason::Running;
         }
 
-        if (raw & 0x7f) == 0x73 && ((raw >> 12) & 0x07) == 1 {
-            let csr = (raw >> 20) & 0xfff;
-            let rd = match Register::new(((raw >> 7) & 0x1f) as u8) {
-                Ok(register) => register,
-                Err(error) => return StopReason::DecodeFault(DecodeError::Register(error)),
-            };
-            let rs1 = match Register::new(((raw >> 15) & 0x1f) as u8) {
-                Ok(register) => register,
-                Err(error) => return StopReason::DecodeFault(DecodeError::Register(error)),
-            };
-            let old = self.read_csr(csr);
-            self.write_csr(csr, self.read_register(rs1));
-            self.write_register(rd, old);
+        // WFI — treat as NOP on this educational board model.
+        if raw == 0x1050_0073 {
             self.pc = next_pc;
             self.registers[Register::ZERO.index()] = 0;
             return StopReason::Running;
+        }
+
+        // Zicsr: CSRRW/CSRRS/CSRRC + immediate forms (needed by real ODC firmware).
+        if (raw & 0x7f) == 0x73 {
+            let funct3 = (raw >> 12) & 0x07;
+            if matches!(funct3, 1 | 2 | 3 | 5 | 6 | 7) {
+                let csr = (raw >> 20) & 0xfff;
+                let rd = match Register::new(((raw >> 7) & 0x1f) as u8) {
+                    Ok(register) => register,
+                    Err(error) => return StopReason::DecodeFault(DecodeError::Register(error)),
+                };
+                let rs1_imm = (raw >> 15) & 0x1f;
+                let old = self.read_csr(csr);
+                let write_val = match funct3 {
+                    1 => {
+                        // CSRRW
+                        let rs1 = match Register::new(rs1_imm as u8) {
+                            Ok(register) => register,
+                            Err(error) => {
+                                return StopReason::DecodeFault(DecodeError::Register(error))
+                            }
+                        };
+                        Some(self.read_register(rs1))
+                    }
+                    2 => {
+                        // CSRRS (rs1 == x0 → read-only)
+                        if rs1_imm == 0 {
+                            None
+                        } else {
+                            let rs1 = match Register::new(rs1_imm as u8) {
+                                Ok(register) => register,
+                                Err(error) => {
+                                    return StopReason::DecodeFault(DecodeError::Register(error))
+                                }
+                            };
+                            Some(old | self.read_register(rs1))
+                        }
+                    }
+                    3 => {
+                        // CSRRC
+                        if rs1_imm == 0 {
+                            None
+                        } else {
+                            let rs1 = match Register::new(rs1_imm as u8) {
+                                Ok(register) => register,
+                                Err(error) => {
+                                    return StopReason::DecodeFault(DecodeError::Register(error))
+                                }
+                            };
+                            Some(old & !self.read_register(rs1))
+                        }
+                    }
+                    5 => Some(rs1_imm),                  // CSRRWI
+                    6 => Some(old | rs1_imm),             // CSRRSI
+                    7 => Some(old & !rs1_imm),            // CSRRCI
+                    _ => None,
+                };
+                if let Some(value) = write_val {
+                    self.write_csr(csr, value);
+                }
+                self.write_register(rd, old);
+                self.pc = next_pc;
+                self.registers[Register::ZERO.index()] = 0;
+                return StopReason::Running;
+            }
         }
 
         let instruction = match decode(raw) {
@@ -336,6 +391,7 @@ impl<B: Bus, const TRACE: usize> Machine<B, TRACE> {
                     let rs2 = compressed_register((raw >> 2) & 0x07);
                     let value = match ((raw >> 12) & 1, (raw >> 5) & 0x03) {
                         (0, 0) => self.read_register(rd).wrapping_sub(self.read_register(rs2)),
+                        (0, 1) => self.read_register(rd) ^ self.read_register(rs2), // C.XOR
                         (0, 2) => self.read_register(rd) | self.read_register(rs2),
                         (0, 3) => self.read_register(rd) & self.read_register(rs2),
                         _ => {
@@ -456,8 +512,13 @@ impl<B: Bus, const TRACE: usize> Machine<B, TRACE> {
     fn read_csr(&self, csr: u32) -> u32 {
         match csr {
             0x300 => self.mstatus,
+            0x304 => 0, // mie (stub)
             0x305 => self.mtvec,
             0x341 => self.mepc,
+            0x342 => 0, // mcause
+            0x343 => 0, // mtval
+            0x344 => 0, // mip
+            0xf14 => 0, // mhartid
             _ => 0,
         }
     }
@@ -583,7 +644,15 @@ fn op_imm(kind: u8, lhs: u32, imm: i32) -> u32 {
         2 => ((lhs as i32) < imm) as u32,
         3 => (lhs < rhs) as u32,
         4 => lhs ^ rhs,
-        5 => lhs >> (rhs & 0x1f),
+        // SRLI vs SRAI: bit 10 of the I-immediate selects arithmetic shift.
+        5 => {
+            let shamt = rhs & 0x1f;
+            if rhs & 0x400 != 0 {
+                ((lhs as i32) >> shamt) as u32
+            } else {
+                lhs >> shamt
+            }
+        }
         6 => lhs | rhs,
         7 => lhs & rhs,
         _ => 0,
@@ -597,10 +666,11 @@ fn op(kind: u8, lhs: u32, rhs: u32) -> u32 {
         2 => ((lhs as i32) < (rhs as i32)) as u32,
         3 => (lhs < rhs) as u32,
         4 => lhs ^ rhs,
-        5 => lhs >> (rhs & 0x1f),
+        5 => lhs >> (rhs & 0x1f),                    // SRL
         6 => lhs | rhs,
         7 => lhs & rhs,
-        8 => lhs.wrapping_sub(rhs),
+        8 => lhs.wrapping_sub(rhs),                  // SUB (funct7 bit)
+        13 => ((lhs as i32) >> (rhs & 0x1f)) as u32, // SRA
         _ => 0,
     }
 }
@@ -608,7 +678,7 @@ fn op(kind: u8, lhs: u32, rhs: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bus::RamBus;
+    use crate::bus::{BoardBus, RamBus};
 
     const LUI_X1_GPIO: u32 = 0x4001_10b7;
     const ADDI_X2_ONE: u32 = 0x0010_0113;
@@ -638,5 +708,56 @@ mod tests {
 
         assert_eq!(events[0].value, 1);
         assert_eq!(events[1].value, 0);
+    }
+
+    #[test]
+    fn csrr_mstatus_is_readable() {
+        // csrr a0, mstatus ; ebreak
+        let mut bus = RamBus::<4>::new();
+        bus.load_word(0, 0x3000_2573).unwrap();
+        bus.load_word(1, EBREAK).unwrap();
+
+        let mut machine = Machine::<_, 4>::new(bus);
+        machine.mstatus = 0x88;
+        let reason = machine.run(RunLimit { max_cycles: 8 });
+        assert_eq!(reason, StopReason::Ebreak);
+        assert_eq!(machine.register(Register::new(10).unwrap()), 0x88);
+    }
+
+    #[test]
+    fn runs_real_odc_sample_blink_binary() {
+        let bytes = include_bytes!("../testdata/sample.bin");
+        let mut bus = BoardBus::<16384, 2048>::new();
+        bus.load_flash(bytes).unwrap();
+
+        let mut machine = Machine::<_, 256>::new(bus);
+        let reason = machine.run(RunLimit {
+            max_cycles: 5_000_000,
+        });
+
+        let mut led_on_events = 0u32;
+        let mut led_off_events = 0u32;
+        for event in machine.events() {
+            if event.address != 0x4001_1410 {
+                continue;
+            }
+            // active-low LED on PD6
+            if event.value & (1 << (6 + 16)) != 0 {
+                led_on_events += 1;
+            }
+            if event.value & (1 << 6) != 0 {
+                led_off_events += 1;
+            }
+        }
+
+        assert!(
+            matches!(reason, StopReason::MaxCycles),
+            "unexpected stop: {reason:?} pc=0x{:08x}",
+            machine.pc()
+        );
+        assert!(
+            led_on_events >= 1 && led_off_events >= 1,
+            "expected PD6 blink toggles, on={led_on_events} off={led_off_events}"
+        );
     }
 }

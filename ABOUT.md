@@ -151,7 +151,13 @@ Not accepted:
 
 Claudio OS is early and experimental.
 
-The project currently focuses on building the foundation: instruction decoding, machine state, board modeling, pinout visualization, real binary loading, and a visual blink demonstration.
+The emulator already runs real One Dollar Board firmware images. The checked-in `testdata/sample.bin` (ODC blink, RV32EC) executes under `cargo test` and:
+
+```text
+cargo run --release -- run-bin testdata/sample.bin
+```
+
+Recent foundation work includes: RV32EC decode/execute (including Zicsr and compressed XOR/SRA), board bus modeling (GPIO/SysTick/RCC), pinout visualization, and active-low LED semantics for board pin 19 / PD6.
 
 ## Long-Term Vision
 

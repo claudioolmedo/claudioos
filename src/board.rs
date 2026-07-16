@@ -49,8 +49,11 @@ impl BoardTarget {
         cli_name: "rv32ec-onedollarboard",
         model: ONE_DOLLAR_BOARD_MODEL_1_004,
         instruction_set: InstructionSet::Rv32ec,
-        flash_bytes: 65_536,
-        ram_bytes: 4_096,
+        // One Dollar Board 1.004 contract (CH32V003-class): 16 KiB flash, 2 KiB RAM.
+        // BoardBus generics may allocate larger windows for tooling; this is the
+        // portable contract student programs should assume.
+        flash_bytes: 16_384,
+        ram_bytes: 2_048,
         rules: &[
             CompatibilityRule::BoardContractFirst,
             CompatibilityRule::StableRustPrograms,
